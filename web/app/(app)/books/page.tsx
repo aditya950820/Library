@@ -39,7 +39,7 @@ export default function BooksPage() {
     setLoading(true);
     const { data } = await supabase
       .from("books")
-      .select("*")
+      .select("*, adder:profiles!books_added_by_fkey(email)")
       .order("created_at", { ascending: false });
     setBooks((data as Book[]) ?? []);
     setLoading(false);
@@ -240,6 +240,9 @@ export default function BooksPage() {
                     <Td>
                       <div className="font-medium">{b.name}</div>
                       {b.isbn && <div className="text-xs text-muted">{b.isbn}</div>}
+                      {b.adder?.email && (
+                        <div className="text-xs text-muted">Added by {b.adder.email}</div>
+                      )}
                     </Td>
                     <Td>{b.author}</Td>
                     <Td>
@@ -289,6 +292,7 @@ export default function BooksPage() {
                   {(b.category || "Uncategorised")}
                   {b.sub_category ? ` · ${b.sub_category}` : ""}
                   {b.isbn ? ` · ${b.isbn}` : ""}
+                  {b.adder?.email ? ` · Added by ${b.adder.email}` : ""}
                 </div>
                 <div className="mt-3 flex gap-2">
                   <button className="btn btn-ghost flex-1 py-1.5 text-xs" onClick={() => openEdit(b)}>

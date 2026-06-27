@@ -5,7 +5,13 @@ import { createClient } from "@/lib/supabase/client";
 import { PageHeader, Modal, EmptyState, Field } from "@/components/ui";
 import BarcodeScanner from "@/components/BarcodeScanner";
 import { normalizeIsbn } from "@/lib/isbn";
-import type { Book, Student, BookIssueWithRefs } from "@/lib/types";
+import {
+  MAX_BOOKS_PER_STUDENT,
+  WARN_BOOKS_THRESHOLD,
+  type Book,
+  type Student,
+  type BookIssueWithRefs,
+} from "@/lib/types";
 
 type Filter = "active" | "overdue" | "returned" | "all";
 
@@ -24,7 +30,9 @@ export default function IssuesPage() {
     const [iss, bk, st] = await Promise.all([
       supabase
         .from("book_issues")
-        .select("*, books(name, author), students(student_name, id_number)")
+        .select(
+          "*, books(name, author), students(student_name, id_number), issuer:profiles!book_issues_issued_by_fkey(email)"
+        )
         .order("issued_at", { ascending: false }),
       supabase.from("books").select("*").order("name"),
       supabase.from("students").select("*").order("student_name"),
@@ -81,6 +89,16 @@ export default function IssuesPage() {
     all: issues.length,
   };
 
+  // Active (not-yet-returned) books currently held by each student.
+  const activeByStudent = useMemo(() => {
+    const m: Record<string, number> = {};
+    issues.forEach((i) => {
+      if (i.status === "issued")
+        m[i.student_id] = (m[i.student_id] ?? 0) + 1;
+    });
+    return m;
+  }, [issues]);
+
   return (
     <div>
       <PageHeader
@@ -135,6 +153,7 @@ export default function IssuesPage() {
                     Issued {fmt(i.issued_at)} · Due {fmt(i.due_date)}
                     {i.returned_at ? ` · Returned ${fmt(i.returned_at)}` : ""}
                     {i.fine_amount > 0 ? ` · Fine ₹${i.fine_amount}` : ""}
+                    {i.issuer?.email ? ` · by ${i.issuer.email}` : ""}
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
@@ -156,6 +175,7 @@ export default function IssuesPage() {
         onClose={() => setIssueOpen(false)}
         books={books}
         students={students}
+        activeByStudent={activeByStudent}
         onDone={load}
       />
     </div>
@@ -167,12 +187,14 @@ function IssueModal({
   onClose,
   books,
   students,
+  activeByStudent,
   onDone,
 }: {
   open: boolean;
   onClose: () => void;
   books: Book[];
   students: Student[];
+  activeByStudent: Record<string, number>;
   onDone: () => void;
 }) {
   const supabase = createClient();
@@ -185,6 +207,8 @@ function IssueModal({
   const [scanMsg, setScanMsg] = useState<string | null>(null);
 
   const availableBooks = books.filter((b) => b.available_quantity > 0);
+  const activeCount = studentId ? (activeByStudent[studentId] ?? 0) : 0;
+  const atMax = activeCount >= MAX_BOOKS_PER_STUDENT;
 
   function handleScan(code: string) {
     setScanOpen(false);
@@ -206,8 +230,24 @@ function IssueModal({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
     setError(null);
+
+    // Hard limit — also enforced in the database.
+    if (activeCount >= MAX_BOOKS_PER_STUDENT) {
+      setError(
+        `This student already has ${activeCount} books out — ${MAX_BOOKS_PER_STUDENT} is the maximum. Return one before issuing another.`
+      );
+      return;
+    }
+    // Soft warning — require explicit approval past the threshold.
+    if (activeCount >= WARN_BOOKS_THRESHOLD) {
+      const ok = window.confirm(
+        `This student already has ${activeCount} book${activeCount === 1 ? "" : "s"} issued. Do you still want to issue another?`
+      );
+      if (!ok) return;
+    }
+
+    setSaving(true);
     const { error } = await supabase.rpc("issue_book", {
       p_book_id: bookId,
       p_student_id: studentId,
@@ -271,6 +311,25 @@ function IssueModal({
               </option>
             ))}
           </select>
+          {studentId && (
+            <p
+              className="mt-1 text-xs"
+              style={{
+                color: atMax
+                  ? "var(--danger)"
+                  : activeCount >= WARN_BOOKS_THRESHOLD
+                    ? "var(--warning)"
+                    : "var(--muted)",
+              }}
+            >
+              {atMax
+                ? `Has ${activeCount}/${MAX_BOOKS_PER_STUDENT} books — at the maximum. Return one first.`
+                : `Currently holds ${activeCount}/${MAX_BOOKS_PER_STUDENT} book${activeCount === 1 ? "" : "s"}.` +
+                  (activeCount >= WARN_BOOKS_THRESHOLD
+                    ? " You'll be asked to confirm."
+                    : "")}
+            </p>
+          )}
         </Field>
 
         <Field label="Issue for (days)">
@@ -283,7 +342,7 @@ function IssueModal({
           <button type="button" className="btn btn-ghost" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={saving || !bookId || !studentId}>
+          <button type="submit" className="btn btn-primary" disabled={saving || !bookId || !studentId || atMax}>
             {saving ? "Issuing…" : "Issue book"}
           </button>
         </div>

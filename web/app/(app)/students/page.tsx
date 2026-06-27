@@ -21,6 +21,11 @@ export default function StudentsPage() {
   const [id, setId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [idNumber, setIdNumber] = useState("");
+  const [mobile, setMobile] = useState("");
+  const [address, setAddress] = useState("");
+  const [alternateNo, setAlternateNo] = useState("");
+  const [parentName, setParentName] = useState("");
+  const [parentMobile, setParentMobile] = useState("");
   const [extra, setExtra] = useState<KV[]>([]);
 
   const load = useCallback(async () => {
@@ -46,11 +51,20 @@ export default function StudentsPage() {
     );
   });
 
-  function openNew() {
-    setId(null);
+  function resetFields() {
     setName("");
     setIdNumber("");
+    setMobile("");
+    setAddress("");
+    setAlternateNo("");
+    setParentName("");
+    setParentMobile("");
     setExtra([]);
+  }
+
+  function openNew() {
+    setId(null);
+    resetFields();
     setError(null);
     setEditOpen(true);
   }
@@ -58,6 +72,11 @@ export default function StudentsPage() {
     setId(s.student_id);
     setName(s.student_name);
     setIdNumber(s.id_number);
+    setMobile(s.mobile ?? "");
+    setAddress(s.address ?? "");
+    setAlternateNo(s.alternate_no ?? "");
+    setParentName(s.parent_name ?? "");
+    setParentMobile(s.parent_mobile ?? "");
     setExtra(
       Object.entries(s.additional_details ?? {}).map(([key, value]) => ({
         key,
@@ -79,6 +98,11 @@ export default function StudentsPage() {
     const payload = {
       student_name: name.trim(),
       id_number: idNumber.trim(),
+      mobile: mobile.trim() || null,
+      address: address.trim() || null,
+      alternate_no: alternateNo.trim() || null,
+      parent_name: parentName.trim() || null,
+      parent_mobile: parentMobile.trim() || null,
       additional_details: Object.keys(details).length ? details : null,
     };
     const res = id
@@ -147,17 +171,21 @@ export default function StudentsPage() {
                   <div className="text-sm text-muted">{s.id_number}</div>
                 </div>
               </div>
-              {s.additional_details &&
-                Object.keys(s.additional_details).length > 0 && (
-                  <dl className="mt-3 space-y-1 text-xs">
-                    {Object.entries(s.additional_details).map(([k, v]) => (
-                      <div key={k} className="flex justify-between gap-2">
-                        <dt className="capitalize text-muted">{k}</dt>
-                        <dd className="text-right">{String(v)}</dd>
-                      </div>
-                    ))}
-                  </dl>
+              <dl className="mt-3 space-y-1 text-xs">
+                {s.mobile && <Row k="Mobile" v={s.mobile} />}
+                {s.alternate_no && <Row k="Alternate" v={s.alternate_no} />}
+                {s.address && <Row k="Address" v={s.address} />}
+                {(s.parent_name || s.parent_mobile) && (
+                  <Row
+                    k="Parent"
+                    v={[s.parent_name, s.parent_mobile].filter(Boolean).join(" · ")}
+                  />
                 )}
+                {s.additional_details &&
+                  Object.entries(s.additional_details).map(([k, v]) => (
+                    <Row key={k} k={k} v={String(v)} />
+                  ))}
+              </dl>
               <div className="mt-3 flex gap-2">
                 <button className="btn btn-ghost flex-1 py-1.5 text-xs" onClick={() => openEdit(s)}>
                   Edit
@@ -178,6 +206,24 @@ export default function StudentsPage() {
           </Field>
           <Field label="ID number *">
             <input className="input" required value={idNumber} onChange={(e) => setIdNumber(e.target.value)} />
+          </Field>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Student mobile">
+              <input className="input" inputMode="tel" value={mobile} onChange={(e) => setMobile(e.target.value)} />
+            </Field>
+            <Field label="Alternate no.">
+              <input className="input" inputMode="tel" value={alternateNo} onChange={(e) => setAlternateNo(e.target.value)} />
+            </Field>
+            <Field label="Parent name">
+              <input className="input" value={parentName} onChange={(e) => setParentName(e.target.value)} />
+            </Field>
+            <Field label="Parent mobile">
+              <input className="input" inputMode="tel" value={parentMobile} onChange={(e) => setParentMobile(e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Address">
+            <textarea className="input" rows={2} value={address} onChange={(e) => setAddress(e.target.value)} />
           </Field>
 
           <div>
@@ -283,7 +329,18 @@ function BulkUploadStudents({
   async function importRows() {
     setImporting(true);
     setError(null);
-    const known = ["student_name", "name", "id_number", "id"];
+    const known = [
+      "student_name",
+      "name",
+      "id_number",
+      "id",
+      "mobile",
+      "address",
+      "alternate_no",
+      "alternate",
+      "parent_name",
+      "parent_mobile",
+    ];
     const payload = rows
       .filter((r) => (r.student_name || r.name) && (r.id_number || r.id))
       .map((r) => {
@@ -294,6 +351,11 @@ function BulkUploadStudents({
         return {
           student_name: (r.student_name || r.name)?.trim(),
           id_number: (r.id_number || r.id)?.trim(),
+          mobile: r.mobile?.trim() || null,
+          address: r.address?.trim() || null,
+          alternate_no: (r.alternate_no || r.alternate)?.trim() || null,
+          parent_name: r.parent_name?.trim() || null,
+          parent_mobile: r.parent_mobile?.trim() || null,
           additional_details: Object.keys(details).length ? details : null,
         };
       });
@@ -327,8 +389,9 @@ function BulkUploadStudents({
       <div className="flex flex-col gap-4">
         <div className="rounded-lg bg-[var(--accent-soft)] p-3 text-xs text-muted">
           Upload a <strong>CSV</strong> with at least <code>student_name</code> and{" "}
-          <code>id_number</code>. Any extra columns (class, section, phone…) are saved as
-          additional details.{" "}
+          <code>id_number</code>. Recognised columns:{" "}
+          <code>mobile, address, alternate_no, parent_name, parent_mobile</code>. Any
+          other columns are saved as additional details.{" "}
           <button type="button" className="underline" onClick={downloadStudentTemplate}>
             Download template
           </button>
@@ -367,8 +430,8 @@ function BulkUploadStudents({
 
 function downloadStudentTemplate() {
   const csv =
-    "student_name,id_number,class,section,phone\n" +
-    "Asha Verma,STU-1024,10,B,9876543210\n";
+    "student_name,id_number,mobile,address,alternate_no,parent_name,parent_mobile,class\n" +
+    "Asha Verma,STU-1024,9876543210,12 MG Road Pune,9123456780,Ramesh Verma,9988776655,10\n";
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -376,4 +439,13 @@ function downloadStudentTemplate() {
   a.download = "students_template.csv";
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function Row({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <dt className="capitalize text-muted">{k}</dt>
+      <dd className="text-right">{v}</dd>
+    </div>
+  );
 }
