@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+// isbn.gov.in only responds to India-based IPs — keep this function in Mumbai.
+export const preferredRegion = "bom1";
 
 const ENDPOINT = "https://isbn.gov.in/Home/FillSearchText";
 
@@ -47,7 +49,50 @@ function yearOf(d?: string) {
   return d?.match(/\d{4}/)?.[0];
 }
 
-async function query(type: string, value: string): Promise<IsbnInResult[]> {
+const UA =
+  "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+
+// Browser-like headers shared by both the handshake GET and the search POST.
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent": UA,
+  "Accept-Language": "en-US,en;q=0.9",
+  "sec-ch-ua": '"Chromium";v="120", "Google Chrome";v="120", "Not/A)Brand";v="99"',
+  "sec-ch-ua-mobile": "?1",
+  "sec-ch-ua-platform": '"Android"',
+};
+
+// Cache the session cookie across requests (warm lambda) for ~10 min.
+let cookieCache: { value: string; at: number } | null = null;
+const COOKIE_TTL = 10 * 60 * 1000;
+
+async function getSessionCookie(force = false): Promise<string> {
+  if (!force && cookieCache && Date.now() - cookieCache.at < COOKIE_TTL) {
+    return cookieCache.value;
+  }
+  const res = await fetch("https://isbn.gov.in/Home/IsbnSearch", {
+    headers: {
+      ...BROWSER_HEADERS,
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+    },
+    cache: "no-store",
+  });
+  // Node/undici exposes getSetCookie(); fall back to the raw header.
+  const setCookies: string[] =
+    (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie?.() ??
+    (res.headers.get("set-cookie") ? [res.headers.get("set-cookie")!] : []);
+  const cookie = setCookies
+    .map((c) => c.split(";")[0])
+    .filter(Boolean)
+    .join("; ");
+  cookieCache = { value: cookie, at: Date.now() };
+  return cookie;
+}
+
+async function postSearch(type: string, value: string, cookie: string) {
   const payload = {
     data: {
       draw: 1,
@@ -60,23 +105,39 @@ async function query(type: string, value: string): Promise<IsbnInResult[]> {
     _obj: { Type: type, SearchValue: value, ViewReport: 1 },
   };
 
-  const res = await fetch(ENDPOINT, {
+  return fetch(ENDPOINT, {
     method: "POST",
     headers: {
+      ...BROWSER_HEADERS,
       "Content-Type": "application/json; charset=UTF-8",
       Accept: "application/json, text/javascript, */*; q=0.01",
       "X-Requested-With": "XMLHttpRequest",
       Referer: "https://isbn.gov.in/Home/IsbnSearch",
       Origin: "https://isbn.gov.in",
-      "User-Agent":
-        "Mozilla/5.0 (Linux; Android 6.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36",
+      "Sec-Fetch-Dest": "empty",
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Site": "same-origin",
+      ...(cookie ? { Cookie: cookie } : {}),
     },
     body: JSON.stringify(payload),
-    // The govt site can be slow; don't cache stale misses for long.
     cache: "no-store",
   });
+}
 
-  if (!res.ok) throw new Error(`isbn.gov.in returned ${res.status}`);
+async function query(type: string, value: string): Promise<IsbnInResult[]> {
+  let cookie = await getSessionCookie();
+  let res = await postSearch(type, value, cookie);
+
+  // If the cached session is stale/blocked, re-handshake once and retry.
+  if (res.status === 401 || res.status === 403) {
+    cookie = await getSessionCookie(true);
+    res = await postSearch(type, value, cookie);
+  }
+
+  if (!res.ok) {
+    const body = (await res.text().catch(() => "")).slice(0, 200);
+    throw new Error(`isbn.gov.in returned ${res.status}${body ? `: ${body}` : ""}`);
+  }
   const json = await res.json();
   const rows: IsbnRow[] = json.data ? JSON.parse(json.data) : [];
 
