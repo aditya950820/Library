@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { PageHeader, Modal, EmptyState, Field } from "@/components/ui";
+import BarcodeScanner from "@/components/BarcodeScanner";
+import { normalizeIsbn } from "@/lib/isbn";
 import type { Book, Student, BookIssueWithRefs } from "@/lib/types";
 
 type Filter = "active" | "overdue" | "returned" | "all";
@@ -152,7 +154,7 @@ export default function IssuesPage() {
       <IssueModal
         open={issueOpen}
         onClose={() => setIssueOpen(false)}
-        books={books.filter((b) => b.available_quantity > 0)}
+        books={books}
         students={students}
         onDone={load}
       />
@@ -179,6 +181,28 @@ function IssueModal({
   const [days, setDays] = useState(14);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanMsg, setScanMsg] = useState<string | null>(null);
+
+  const availableBooks = books.filter((b) => b.available_quantity > 0);
+
+  function handleScan(code: string) {
+    setScanOpen(false);
+    const isbn = normalizeIsbn(code);
+    const match = books.find((b) => b.isbn && normalizeIsbn(b.isbn) === isbn);
+    if (!match) {
+      setBookId("");
+      setScanMsg(`No book in the catalogue with ISBN ${isbn}. Add it first.`);
+      return;
+    }
+    if (match.available_quantity <= 0) {
+      setBookId("");
+      setScanMsg(`"${match.name}" has no copies available right now.`);
+      return;
+    }
+    setBookId(match.book_id);
+    setScanMsg(`Selected "${match.name}" by ${match.author}.`);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -198,6 +222,7 @@ function IssueModal({
     setBookId("");
     setStudentId("");
     setDays(14);
+    setScanMsg(null);
     onClose();
     onDone();
   }
@@ -205,16 +230,32 @@ function IssueModal({
   return (
     <Modal open={open} onClose={onClose} title="Issue a book">
       <form onSubmit={submit} className="flex flex-col gap-4">
+        <button
+          type="button"
+          className="btn btn-ghost w-full"
+          onClick={() => setScanOpen(true)}
+        >
+          ⬚ Scan book ISBN with camera
+        </button>
+        {scanMsg && (
+          <p
+            className="-mt-1 text-xs"
+            style={{ color: bookId ? "var(--success)" : "var(--danger)" }}
+          >
+            {scanMsg}
+          </p>
+        )}
+
         <Field label="Book *">
           <select className="input" required value={bookId} onChange={(e) => setBookId(e.target.value)}>
             <option value="">Select a book…</option>
-            {books.map((b) => (
+            {availableBooks.map((b) => (
               <option key={b.book_id} value={b.book_id}>
                 {b.name} — {b.author} ({b.available_quantity} avail.)
               </option>
             ))}
           </select>
-          {books.length === 0 && (
+          {availableBooks.length === 0 && (
             <p className="mt-1 text-xs" style={{ color: "var(--danger)" }}>
               No books with available copies.
             </p>
@@ -247,6 +288,12 @@ function IssueModal({
           </button>
         </div>
       </form>
+
+      <BarcodeScanner
+        open={scanOpen}
+        onClose={() => setScanOpen(false)}
+        onDetect={handleScan}
+      />
     </Modal>
   );
 }

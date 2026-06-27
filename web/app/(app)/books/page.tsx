@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Papa from "papaparse";
 import { createClient } from "@/lib/supabase/client";
 import { PageHeader, Modal, EmptyState, Field } from "@/components/ui";
+import BarcodeScanner from "@/components/BarcodeScanner";
+import { lookupIsbn, normalizeIsbn } from "@/lib/isbn";
 import type { Book } from "@/lib/types";
 
 const EMPTY: Partial<Book> = {
@@ -28,6 +30,8 @@ export default function BooksPage() {
   const [form, setForm] = useState<Partial<Book>>(EMPTY);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [lookupMsg, setLookupMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,12 +61,36 @@ export default function BooksPage() {
   function openNew() {
     setForm(EMPTY);
     setError(null);
+    setLookupMsg(null);
     setEditOpen(true);
   }
   function openEdit(b: Book) {
     setForm(b);
     setError(null);
+    setLookupMsg(null);
     setEditOpen(true);
+  }
+
+  async function handleScan(code: string) {
+    const isbn = normalizeIsbn(code);
+    setScanOpen(false);
+    // Make sure the form is open so the scanned data is visible.
+    setEditOpen(true);
+    setForm((f) => ({ ...f, isbn }));
+    setLookupMsg("Looking up book details…");
+    const found = await lookupIsbn(isbn);
+    if (found && (found.title || found.author || found.publisher)) {
+      setForm((f) => ({
+        ...f,
+        isbn,
+        name: f.name || found.title || "",
+        author: f.author || found.author || "",
+        publisher: f.publisher || found.publisher || "",
+      }));
+      setLookupMsg("Details found — review and add a title if needed.");
+    } else {
+      setLookupMsg("ISBN captured. No online match — fill the details manually.");
+    }
   }
 
   async function save(e: React.FormEvent) {
@@ -129,6 +157,17 @@ export default function BooksPage() {
           <div className="flex gap-2">
             <button className="btn btn-ghost" onClick={() => setBulkOpen(true)}>
               ↥ Bulk upload
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setForm(EMPTY);
+                setError(null);
+                setLookupMsg(null);
+                setScanOpen(true);
+              }}
+            >
+              ⬚ Scan
             </button>
             <button className="btn btn-primary" onClick={openNew}>
               + Add book
@@ -245,6 +284,18 @@ export default function BooksPage() {
         title={form.book_id ? "Edit book" : "Add book"}
       >
         <form onSubmit={save} className="flex flex-col gap-4">
+          <button
+            type="button"
+            className="btn btn-ghost w-full"
+            onClick={() => setScanOpen(true)}
+          >
+            ⬚ Scan ISBN with camera
+          </button>
+          {lookupMsg && (
+            <p className="-mt-1 text-xs" style={{ color: "var(--muted)" }}>
+              {lookupMsg}
+            </p>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Title *">
               <input className="input" required value={form.name ?? ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -289,6 +340,12 @@ export default function BooksPage() {
       </Modal>
 
       <BulkUpload open={bulkOpen} onClose={() => setBulkOpen(false)} onDone={load} />
+
+      <BarcodeScanner
+        open={scanOpen}
+        onClose={() => setScanOpen(false)}
+        onDetect={handleScan}
+      />
     </div>
   );
 }
