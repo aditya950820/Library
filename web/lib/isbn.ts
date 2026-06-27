@@ -96,22 +96,81 @@ export async function lookupIsbn(rawIsbn: string): Promise<BookMeta | null> {
     /* ignore */
   }
 
+  // 3) India ISBN portal (isbn.gov.in) via our server route — best for Indian titles
+  try {
+    const res = await fetch(`/api/isbn-in?isbn=${encodeURIComponent(isbn)}`);
+    if (res.ok) {
+      const { results } = await res.json();
+      const hit = results?.[0];
+      if (hit?.title) {
+        return {
+          isbn: hit.isbn || isbn,
+          title: hit.title,
+          author: hit.author,
+          publisher: hit.publisher,
+          year: hit.year,
+        };
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
   return { isbn }; // ISBN captured, no metadata found
 }
 
-/** Search books by free text (title, author…) via Google Books. */
+/** Search books by free text via Google Books + the India ISBN portal. */
 export async function searchBooks(query: string): Promise<BookMeta[]> {
   const q = query.trim();
   if (q.length < 2) return [];
-  try {
-    const res = await fetch(gUrl(q, "&maxResults=12&printType=books"));
-    if (!res.ok) return [];
-    const data = await res.json();
-    const items: { volumeInfo: GVolumeInfo }[] = data.items ?? [];
-    return items
-      .map((it) => fromGoogle(it.volumeInfo))
-      .filter((b) => b.title);
-  } catch {
-    return [];
+
+  const google = (async () => {
+    try {
+      const res = await fetch(gUrl(q, "&maxResults=12&printType=books"));
+      if (!res.ok) return [];
+      const data = await res.json();
+      const items: { volumeInfo: GVolumeInfo }[] = data.items ?? [];
+      return items.map((it) => fromGoogle(it.volumeInfo)).filter((b) => b.title);
+    } catch {
+      return [];
+    }
+  })();
+
+  const india = (async (): Promise<BookMeta[]> => {
+    try {
+      const res = await fetch(`/api/isbn-in?title=${encodeURIComponent(q)}`);
+      if (!res.ok) return [];
+      const { results } = await res.json();
+      return (results ?? []).map(
+        (r: {
+          isbn: string;
+          title?: string;
+          author?: string;
+          publisher?: string;
+          year?: string;
+        }) => ({
+          isbn: r.isbn,
+          title: r.title,
+          author: r.author,
+          publisher: r.publisher,
+          year: r.year,
+        })
+      );
+    } catch {
+      return [];
+    }
+  })();
+
+  const [g, i] = await Promise.all([google, india]);
+
+  // Merge, de-duplicating by ISBN (or title when ISBN missing). Google first.
+  const seen = new Set<string>();
+  const merged: BookMeta[] = [];
+  for (const b of [...g, ...i]) {
+    const key = (b.isbn || b.title || "").toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(b);
   }
+  return merged;
 }
