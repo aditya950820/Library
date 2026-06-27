@@ -5,7 +5,8 @@ import Papa from "papaparse";
 import { createClient } from "@/lib/supabase/client";
 import { PageHeader, Modal, EmptyState, Field } from "@/components/ui";
 import BarcodeScanner from "@/components/BarcodeScanner";
-import { lookupIsbn, normalizeIsbn } from "@/lib/isbn";
+import BookSearch from "@/components/BookSearch";
+import { lookupIsbn, normalizeIsbn, type BookMeta } from "@/lib/isbn";
 import type { Book } from "@/lib/types";
 
 const EMPTY: Partial<Book> = {
@@ -31,6 +32,7 @@ export default function BooksPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [lookupMsg, setLookupMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -91,6 +93,20 @@ export default function BooksPage() {
     } else {
       setLookupMsg("ISBN captured. No online match — fill the details manually.");
     }
+  }
+
+  function handlePickFromSearch(b: BookMeta) {
+    setSearchOpen(false);
+    setEditOpen(true);
+    setForm((f) => ({
+      ...f,
+      name: b.title || f.name || "",
+      author: b.author || f.author || "",
+      publisher: b.publisher || f.publisher || "",
+      isbn: b.isbn || f.isbn || "",
+      category: f.category || b.category || "",
+    }));
+    setLookupMsg("Details filled from search — review and save.");
   }
 
   async function save(e: React.FormEvent) {
@@ -168,6 +184,17 @@ export default function BooksPage() {
               }}
             >
               ⬚ Scan
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setForm(EMPTY);
+                setError(null);
+                setLookupMsg(null);
+                setSearchOpen(true);
+              }}
+            >
+              🔍 Find
             </button>
             <button className="btn btn-primary" onClick={openNew}>
               + Add book
@@ -284,13 +311,22 @@ export default function BooksPage() {
         title={form.book_id ? "Edit book" : "Add book"}
       >
         <form onSubmit={save} className="flex flex-col gap-4">
-          <button
-            type="button"
-            className="btn btn-ghost w-full"
-            onClick={() => setScanOpen(true)}
-          >
-            ⬚ Scan ISBN with camera
-          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setScanOpen(true)}
+            >
+              ⬚ Scan ISBN
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setSearchOpen(true)}
+            >
+              🔍 Find by title
+            </button>
+          </div>
           {lookupMsg && (
             <p className="-mt-1 text-xs" style={{ color: "var(--muted)" }}>
               {lookupMsg}
@@ -345,6 +381,12 @@ export default function BooksPage() {
         open={scanOpen}
         onClose={() => setScanOpen(false)}
         onDetect={handleScan}
+      />
+
+      <BookSearch
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelect={handlePickFromSearch}
       />
     </div>
   );
