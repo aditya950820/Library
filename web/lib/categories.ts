@@ -102,6 +102,16 @@ export const TAXONOMY: Record<string, string[]> = {
 
 export const CATEGORIES = Object.keys(TAXONOMY);
 
+// Shelves A–J, one per category in taxonomy order.
+export const SHELVES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+
+/** The shelf letter assigned to a category (A for the first, B for the next…). */
+export function shelfForCategory(category: string | null | undefined): string {
+  if (!category) return "";
+  const idx = CATEGORIES.indexOf(category);
+  return idx >= 0 ? SHELVES[idx] ?? "" : "";
+}
+
 // Keywords that hint at a category, used for a quick local match before
 // falling back to the AI classifier.
 const CATEGORY_KEYWORDS: Record<string, string[]> = {

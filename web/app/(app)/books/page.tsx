@@ -7,7 +7,14 @@ import { PageHeader, Modal, EmptyState, Field } from "@/components/ui";
 import BarcodeScanner from "@/components/BarcodeScanner";
 import BookSearch from "@/components/BookSearch";
 import { lookupIsbn, normalizeIsbn, type BookMeta } from "@/lib/isbn";
-import { TAXONOMY, CATEGORIES, matchCategory, aiClassify } from "@/lib/categories";
+import {
+  TAXONOMY,
+  CATEGORIES,
+  SHELVES,
+  matchCategory,
+  aiClassify,
+  shelfForCategory,
+} from "@/lib/categories";
 import type { Book } from "@/lib/types";
 
 const EMPTY: Partial<Book> = {
@@ -36,6 +43,7 @@ export default function BooksPage() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [lookupMsg, setLookupMsg] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState("");
+  const [fetching, setFetching] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -86,15 +94,19 @@ export default function BooksPage() {
     const found = await lookupIsbn(isbn);
     if (found && (found.title || found.author || found.publisher)) {
       const guess = matchCategory(found.category, found.title);
-      setForm((f) => ({
-        ...f,
-        isbn,
-        name: f.name || found.title || "",
-        author: f.author || found.author || "",
-        publisher: f.publisher || found.publisher || "",
-        category: f.category || guess?.category || "",
-        sub_category: f.sub_category || guess?.sub_category || "",
-      }));
+      setForm((f) => {
+        const category = f.category || guess?.category || "";
+        return {
+          ...f,
+          isbn,
+          name: f.name || found.title || "",
+          author: f.author || found.author || "",
+          publisher: f.publisher || found.publisher || "",
+          category,
+          sub_category: f.sub_category || guess?.sub_category || "",
+          shelf_no: f.shelf_no || shelfForCategory(category) || "",
+        };
+      });
       setLookupMsg(
         guess
           ? `Details found. Category set to “${guess.category}”. Review and save.`
@@ -109,16 +121,48 @@ export default function BooksPage() {
     setSearchOpen(false);
     setEditOpen(true);
     const guess = matchCategory(b.category, b.title);
-    setForm((f) => ({
-      ...f,
-      name: b.title || f.name || "",
-      author: b.author || f.author || "",
-      publisher: b.publisher || f.publisher || "",
-      isbn: b.isbn || f.isbn || "",
-      category: f.category || guess?.category || "",
-      sub_category: f.sub_category || guess?.sub_category || "",
-    }));
+    setForm((f) => {
+      const category = f.category || guess?.category || "";
+      return {
+        ...f,
+        name: b.title || f.name || "",
+        author: b.author || f.author || "",
+        publisher: b.publisher || f.publisher || "",
+        isbn: b.isbn || f.isbn || "",
+        category,
+        sub_category: f.sub_category || guess?.sub_category || "",
+        shelf_no: f.shelf_no || shelfForCategory(category) || "",
+      };
+    });
     setLookupMsg("Details filled from search — review and save.");
+  }
+
+  async function fetchCategory() {
+    if (!form.name?.trim()) {
+      setLookupMsg("Add a title first, then fetch the category.");
+      return;
+    }
+    setFetching(true);
+    setLookupMsg("Fetching category with AI…");
+    const guess = await aiClassify({
+      title: form.name.trim(),
+      author: form.author?.trim(),
+      hint: form.publisher?.trim() || form.category?.trim(),
+    });
+    if (guess) {
+      setForm((f) => ({
+        ...f,
+        category: guess.category,
+        sub_category: guess.sub_category,
+        shelf_no: shelfForCategory(guess.category) || f.shelf_no || "",
+      }));
+      setLookupMsg(
+        `Set to “${guess.category} › ${guess.sub_category}”, shelf ${shelfForCategory(guess.category)}.`
+      );
+    } else {
+      setLookupMsg("Could not determine a category — please pick one manually.");
+    }
+    setFetching(false);
   }
 
   async function save(e: React.FormEvent) {
@@ -146,12 +190,15 @@ export default function BooksPage() {
       setLookupMsg(null);
     }
 
+    // Shelf follows the category (A–J) unless one was set manually.
+    const shelf = emptyToNull(form.shelf_no) || shelfForCategory(category) || null;
+
     const payload = {
       name: form.name?.trim(),
       author: form.author?.trim(),
       publisher: emptyToNull(form.publisher),
       isbn: emptyToNull(form.isbn),
-      shelf_no: emptyToNull(form.shelf_no),
+      shelf_no: shelf,
       rack_no: emptyToNull(form.rack_no),
       category,
       sub_category: subCategory,
@@ -203,7 +250,7 @@ export default function BooksPage() {
         title="Books"
         subtitle={`${books.length} title${books.length === 1 ? "" : "s"} in catalogue`}
         action={
-          <div className="flex gap-2">
+          <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
             <button className="btn btn-ghost" onClick={() => setBulkOpen(true)}>
               ↥ Bulk upload
             </button>
@@ -399,13 +446,19 @@ export default function BooksPage() {
                 className="input"
                 value={form.category ?? ""}
                 onChange={(e) =>
-                  setForm({ ...form, category: e.target.value, sub_category: "" })
+                  setForm({
+                    ...form,
+                    category: e.target.value,
+                    sub_category: "",
+                    // Shelf follows the category automatically.
+                    shelf_no: shelfForCategory(e.target.value),
+                  })
                 }
               >
                 <option value="">Select / auto-detect on save…</option>
                 {CATEGORIES.map((c) => (
                   <option key={c} value={c}>
-                    {c}
+                    {c} (Shelf {shelfForCategory(c)})
                   </option>
                 ))}
               </select>
@@ -428,8 +481,19 @@ export default function BooksPage() {
                   ))}
               </select>
             </Field>
-            <Field label="Shelf no.">
-              <input className="input" value={form.shelf_no ?? ""} onChange={(e) => setForm({ ...form, shelf_no: e.target.value })} />
+            <Field label="Shelf (auto by category)">
+              <select
+                className="input"
+                value={form.shelf_no ?? ""}
+                onChange={(e) => setForm({ ...form, shelf_no: e.target.value })}
+              >
+                <option value="">—</option>
+                {SHELVES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label="Rack no.">
               <input className="input" value={form.rack_no ?? ""} onChange={(e) => setForm({ ...form, rack_no: e.target.value })} />
@@ -438,6 +502,15 @@ export default function BooksPage() {
               <input type="number" min={0} className="input" value={form.quantity ?? 0} onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })} />
             </Field>
           </div>
+
+          <button
+            type="button"
+            className="btn btn-ghost w-full"
+            onClick={fetchCategory}
+            disabled={fetching}
+          >
+            {fetching ? "Fetching…" : "✨ Fetch category & shelf (AI)"}
+          </button>
 
           {error && <p className="text-sm" style={{ color: "var(--danger)" }}>{error}</p>}
 
@@ -529,7 +602,7 @@ function BulkUpload({
           author: r.author?.trim(),
           publisher: emptyToNull(r.publisher),
           isbn: emptyToNull(r.isbn),
-          shelf_no: emptyToNull(r.shelf_no),
+          shelf_no: emptyToNull(r.shelf_no) || shelfForCategory(category) || null,
           rack_no: emptyToNull(r.rack_no),
           category,
           sub_category: subCategory,
