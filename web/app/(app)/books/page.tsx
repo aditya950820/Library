@@ -7,6 +7,7 @@ import { PageHeader, Modal, EmptyState, Field } from "@/components/ui";
 import BarcodeScanner from "@/components/BarcodeScanner";
 import BookSearch from "@/components/BookSearch";
 import { lookupIsbn, normalizeIsbn, type BookMeta } from "@/lib/isbn";
+import { TAXONOMY, CATEGORIES, matchCategory, aiClassify } from "@/lib/categories";
 import type { Book } from "@/lib/types";
 
 const EMPTY: Partial<Book> = {
@@ -34,6 +35,7 @@ export default function BooksPage() {
   const [scanOpen, setScanOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [lookupMsg, setLookupMsg] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -50,6 +52,7 @@ export default function BooksPage() {
   }, [load]);
 
   const filtered = books.filter((b) => {
+    if (categoryFilter && b.category !== categoryFilter) return false;
     const q = search.toLowerCase();
     return (
       !q ||
@@ -82,14 +85,21 @@ export default function BooksPage() {
     setLookupMsg("Looking up book details…");
     const found = await lookupIsbn(isbn);
     if (found && (found.title || found.author || found.publisher)) {
+      const guess = matchCategory(found.category, found.title);
       setForm((f) => ({
         ...f,
         isbn,
         name: f.name || found.title || "",
         author: f.author || found.author || "",
         publisher: f.publisher || found.publisher || "",
+        category: f.category || guess?.category || "",
+        sub_category: f.sub_category || guess?.sub_category || "",
       }));
-      setLookupMsg("Details found — review and add a title if needed.");
+      setLookupMsg(
+        guess
+          ? `Details found. Category set to “${guess.category}”. Review and save.`
+          : "Details found — review. Category will be auto-detected on save."
+      );
     } else {
       setLookupMsg("ISBN captured. No online match — fill the details manually.");
     }
@@ -98,13 +108,15 @@ export default function BooksPage() {
   function handlePickFromSearch(b: BookMeta) {
     setSearchOpen(false);
     setEditOpen(true);
+    const guess = matchCategory(b.category, b.title);
     setForm((f) => ({
       ...f,
       name: b.title || f.name || "",
       author: b.author || f.author || "",
       publisher: b.publisher || f.publisher || "",
       isbn: b.isbn || f.isbn || "",
-      category: f.category || b.category || "",
+      category: f.category || guess?.category || "",
+      sub_category: f.sub_category || guess?.sub_category || "",
     }));
     setLookupMsg("Details filled from search — review and save.");
   }
@@ -113,6 +125,27 @@ export default function BooksPage() {
     e.preventDefault();
     setSaving(true);
     setError(null);
+
+    // Auto-detect category/sub-category if left blank.
+    let category = emptyToNull(form.category);
+    let subCategory = emptyToNull(form.sub_category);
+    if ((!category || !subCategory) && form.name?.trim()) {
+      setLookupMsg("Auto-detecting category…");
+      const local = matchCategory(form.category, form.name, form.author);
+      const guess =
+        local ??
+        (await aiClassify({
+          title: form.name.trim(),
+          author: form.author?.trim(),
+          hint: form.publisher?.trim(),
+        }));
+      if (guess) {
+        category = category || guess.category;
+        subCategory = subCategory || guess.sub_category;
+      }
+      setLookupMsg(null);
+    }
+
     const payload = {
       name: form.name?.trim(),
       author: form.author?.trim(),
@@ -120,8 +153,8 @@ export default function BooksPage() {
       isbn: emptyToNull(form.isbn),
       shelf_no: emptyToNull(form.shelf_no),
       rack_no: emptyToNull(form.rack_no),
-      category: emptyToNull(form.category),
-      sub_category: emptyToNull(form.sub_category),
+      category,
+      sub_category: subCategory,
       quantity: Number(form.quantity) || 0,
     };
 
@@ -203,13 +236,25 @@ export default function BooksPage() {
         }
       />
 
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap gap-2">
         <input
           className="input max-w-sm"
           placeholder="Search by title, author, ISBN, category…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <select
+          className="input max-w-xs sm:w-56"
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+        >
+          <option value="">All categories</option>
+          {CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
       </div>
 
       {loading ? (
@@ -350,10 +395,38 @@ export default function BooksPage() {
               <input className="input" value={form.isbn ?? ""} onChange={(e) => setForm({ ...form, isbn: e.target.value })} />
             </Field>
             <Field label="Category">
-              <input className="input" value={form.category ?? ""} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+              <select
+                className="input"
+                value={form.category ?? ""}
+                onChange={(e) =>
+                  setForm({ ...form, category: e.target.value, sub_category: "" })
+                }
+              >
+                <option value="">Select / auto-detect on save…</option>
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label="Sub-category">
-              <input className="input" value={form.sub_category ?? ""} onChange={(e) => setForm({ ...form, sub_category: e.target.value })} />
+              <select
+                className="input"
+                value={form.sub_category ?? ""}
+                disabled={!form.category || !TAXONOMY[form.category]}
+                onChange={(e) => setForm({ ...form, sub_category: e.target.value })}
+              >
+                <option value="">
+                  {form.category ? "Select…" : "Pick a category first"}
+                </option>
+                {form.category &&
+                  TAXONOMY[form.category]?.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+              </select>
             </Field>
             <Field label="Shelf no.">
               <input className="input" value={form.shelf_no ?? ""} onChange={(e) => setForm({ ...form, shelf_no: e.target.value })} />
@@ -441,6 +514,16 @@ function BulkUpload({
       .filter((r) => (r.name || r.title) && r.author)
       .map((r) => {
         const qty = Number(r.quantity) || 1;
+        let category = emptyToNull(r.category);
+        let subCategory = emptyToNull(r.sub_category);
+        // Fast, offline category guess when not provided in the CSV.
+        if (!category) {
+          const guess = matchCategory(r.category, r.name || r.title, r.author);
+          if (guess) {
+            category = guess.category;
+            subCategory = subCategory || guess.sub_category;
+          }
+        }
         return {
           name: (r.name || r.title)?.trim(),
           author: r.author?.trim(),
@@ -448,8 +531,8 @@ function BulkUpload({
           isbn: emptyToNull(r.isbn),
           shelf_no: emptyToNull(r.shelf_no),
           rack_no: emptyToNull(r.rack_no),
-          category: emptyToNull(r.category),
-          sub_category: emptyToNull(r.sub_category),
+          category,
+          sub_category: subCategory,
           quantity: qty,
           available_quantity: qty,
         };

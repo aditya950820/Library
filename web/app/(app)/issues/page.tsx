@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { PageHeader, Modal, EmptyState, Field } from "@/components/ui";
 import BarcodeScanner from "@/components/BarcodeScanner";
+import Combobox, { type ComboItem } from "@/components/Combobox";
 import { normalizeIsbn } from "@/lib/isbn";
 import {
   MAX_BOOKS_PER_STUDENT,
@@ -210,6 +211,29 @@ function IssueModal({
   const activeCount = studentId ? (activeByStudent[studentId] ?? 0) : 0;
   const atMax = activeCount >= MAX_BOOKS_PER_STUDENT;
 
+  const bookItems: ComboItem[] = useMemo(
+    () =>
+      books.map((b) => ({
+        value: b.book_id,
+        label: b.name,
+        sublabel: `${b.author}${b.isbn ? ` · ${b.isbn}` : ""} · ${b.available_quantity} avail.`,
+        keywords: `${b.author} ${b.isbn ?? ""}`,
+        disabled: b.available_quantity <= 0,
+      })),
+    [books]
+  );
+
+  const studentItems: ComboItem[] = useMemo(
+    () =>
+      students.map((s) => ({
+        value: s.student_id,
+        label: s.student_name,
+        sublabel: `${s.id_number}${s.mobile ? ` · ${s.mobile}` : ""}`,
+        keywords: `${s.id_number} ${s.mobile ?? ""}`,
+      })),
+    [students]
+  );
+
   function handleScan(code: string) {
     setScanOpen(false);
     const isbn = normalizeIsbn(code);
@@ -287,14 +311,16 @@ function IssueModal({
         )}
 
         <Field label="Book *">
-          <select className="input" required value={bookId} onChange={(e) => setBookId(e.target.value)}>
-            <option value="">Select a book…</option>
-            {availableBooks.map((b) => (
-              <option key={b.book_id} value={b.book_id}>
-                {b.name} — {b.author} ({b.available_quantity} avail.)
-              </option>
-            ))}
-          </select>
+          <Combobox
+            items={bookItems}
+            value={bookId}
+            onChange={(v) => {
+              setBookId(v);
+              setScanMsg(null);
+            }}
+            placeholder="Search book by title, author or ISBN…"
+            emptyText="No matching books"
+          />
           {availableBooks.length === 0 && (
             <p className="mt-1 text-xs" style={{ color: "var(--danger)" }}>
               No books with available copies.
@@ -303,14 +329,13 @@ function IssueModal({
         </Field>
 
         <Field label="Student *">
-          <select className="input" required value={studentId} onChange={(e) => setStudentId(e.target.value)}>
-            <option value="">Select a student…</option>
-            {students.map((s) => (
-              <option key={s.student_id} value={s.student_id}>
-                {s.student_name} — {s.id_number}
-              </option>
-            ))}
-          </select>
+          <Combobox
+            items={studentItems}
+            value={studentId}
+            onChange={setStudentId}
+            placeholder="Search student by name or ID…"
+            emptyText="No matching students"
+          />
           {studentId && (
             <p
               className="mt-1 text-xs"

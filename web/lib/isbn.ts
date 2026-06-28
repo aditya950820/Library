@@ -51,72 +51,106 @@ function gUrl(query: string, extra = "") {
   }`;
 }
 
-/** Look up a single book by ISBN. Tries Google Books, then Open Library. */
-export async function lookupIsbn(rawIsbn: string): Promise<BookMeta | null> {
-  const isbn = normalizeIsbn(rawIsbn);
-  if (isbn.length < 8) return null;
+// --- Individual ISBN sources (each resolves to BookMeta or null) ----------
 
-  // 1) Google Books
+async function srcGoogle(isbn: string): Promise<BookMeta | null> {
   try {
     const res = await fetch(gUrl(`isbn:${isbn}`));
-    if (res.ok) {
-      const data = await res.json();
-      const info = data.items?.[0]?.volumeInfo as GVolumeInfo | undefined;
-      if (info?.title) return fromGoogle(info, isbn);
-    }
+    if (!res.ok) return null;
+    const data = await res.json();
+    const info = data.items?.[0]?.volumeInfo as GVolumeInfo | undefined;
+    return info?.title ? fromGoogle(info, isbn) : null;
   } catch {
-    /* fall through */
+    return null;
   }
+}
 
-  // 2) Open Library
+async function srcOpenLibrary(isbn: string): Promise<BookMeta | null> {
   try {
     const res = await fetch(
       `https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`,
       { headers: { Accept: "application/json" } }
     );
-    if (res.ok) {
-      const data = await res.json();
-      const entry = data[`ISBN:${isbn}`];
-      if (entry?.title) {
-        return {
-          isbn,
-          title: entry.title,
-          author: Array.isArray(entry.authors)
-            ? entry.authors.map((a: { name: string }) => a.name).join(", ")
-            : undefined,
-          publisher: Array.isArray(entry.publishers)
-            ? entry.publishers.map((p: { name: string }) => p.name).join(", ")
-            : undefined,
-          year: entry.publish_date?.match(/\d{4}/)?.[0],
-          cover: entry.cover?.medium,
-        };
-      }
-    }
+    if (!res.ok) return null;
+    const data = await res.json();
+    const entry = data[`ISBN:${isbn}`];
+    if (!entry?.title) return null;
+    return {
+      isbn,
+      title: entry.title,
+      author: Array.isArray(entry.authors)
+        ? entry.authors.map((a: { name: string }) => a.name).join(", ")
+        : undefined,
+      publisher: Array.isArray(entry.publishers)
+        ? entry.publishers.map((p: { name: string }) => p.name).join(", ")
+        : undefined,
+      year: entry.publish_date?.match(/\d{4}/)?.[0],
+      category: Array.isArray(entry.subjects)
+        ? entry.subjects.map((s: { name: string }) => s.name).slice(0, 3).join(", ")
+        : undefined,
+      cover: entry.cover?.medium,
+    };
   } catch {
-    /* ignore */
+    return null;
   }
+}
 
-  // 3) India ISBN portal (isbn.gov.in) via our server route — best for Indian titles
+async function srcIndia(isbn: string): Promise<BookMeta | null> {
   try {
     const res = await fetch(`/api/isbn-in?isbn=${encodeURIComponent(isbn)}`);
-    if (res.ok) {
-      const { results } = await res.json();
-      const hit = results?.[0];
-      if (hit?.title) {
-        return {
-          isbn: hit.isbn || isbn,
-          title: hit.title,
-          author: hit.author,
-          publisher: hit.publisher,
-          year: hit.year,
-        };
-      }
-    }
+    if (!res.ok) return null;
+    const { results } = await res.json();
+    const hit = results?.[0];
+    if (!hit?.title) return null;
+    return {
+      isbn: hit.isbn || isbn,
+      title: hit.title,
+      author: hit.author,
+      publisher: hit.publisher,
+      year: hit.year,
+    };
   } catch {
-    /* ignore */
+    return null;
   }
+}
 
-  return { isbn }; // ISBN captured, no metadata found
+/**
+ * Resolve with the first promise that yields a non-null value. If every source
+ * resolves null, resolves null (rather than rejecting like Promise.any).
+ */
+function firstHit<T>(promises: Promise<T | null>[]): Promise<T | null> {
+  return new Promise((resolve) => {
+    let remaining = promises.length;
+    let settled = false;
+    promises.forEach((p) =>
+      p.then((v) => {
+        if (settled) return;
+        if (v) {
+          settled = true;
+          resolve(v);
+        } else if (--remaining === 0) {
+          resolve(null);
+        }
+      })
+    );
+  });
+}
+
+/**
+ * Look up a single book by ISBN. Queries Google Books, Open Library and the
+ * India ISBN portal IN PARALLEL and returns whichever responds first with data.
+ */
+export async function lookupIsbn(rawIsbn: string): Promise<BookMeta | null> {
+  const isbn = normalizeIsbn(rawIsbn);
+  if (isbn.length < 8) return null;
+
+  const hit = await firstHit<BookMeta>([
+    srcGoogle(isbn),
+    srcOpenLibrary(isbn),
+    srcIndia(isbn),
+  ]);
+
+  return hit ?? { isbn }; // ISBN captured even when no source has metadata
 }
 
 /** Search books by free text via Google Books + the India ISBN portal. */
