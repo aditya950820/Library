@@ -102,14 +102,27 @@ export const TAXONOMY: Record<string, string[]> = {
 
 export const CATEGORIES = Object.keys(TAXONOMY);
 
-// Shelves A–J, one per category in taxonomy order.
+// Shelves A–J.
 export const SHELVES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
 
-/** The shelf letter assigned to a category (A for the first, B for the next…). */
+// Explicit category → shelf assignment.
+export const SHELF_BY_CATEGORY: Record<string, string> = {
+  "Academic Textbook & Student Resource": "A",
+  "History, Culture & Social Sciences": "B",
+  "Competitive Exam & Test Preparation": "C",
+  "Biography, Memoir & True Narrative": "D",
+  "Children's & Juvenile Literature": "E",
+  "Literary & Commercial Fiction": "F",
+  "Reference, Encyclopedias & Dictionaries": "G",
+  "Religion, Philosophy & Spirituality": "H",
+  "Science, Technology & Medicine": "I",
+  "Self-Help & Personal Development": "J",
+};
+
+/** The shelf letter assigned to a category. */
 export function shelfForCategory(category: string | null | undefined): string {
   if (!category) return "";
-  const idx = CATEGORIES.indexOf(category);
-  return idx >= 0 ? SHELVES[idx] ?? "" : "";
+  return SHELF_BY_CATEGORY[category] ?? "";
 }
 
 // Keywords that hint at a category, used for a quick local match before

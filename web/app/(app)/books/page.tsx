@@ -44,12 +44,15 @@ export default function BooksPage() {
   const [lookupMsg, setLookupMsg] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState("");
   const [fetching, setFetching] = useState(false);
+  const [dupBook, setDupBook] = useState<Book | null>(null);
+  const [dupQty, setDupQty] = useState(1);
+  const [dupBusy, setDupBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     const { data } = await supabase
       .from("books")
-      .select("*, adder:profiles!books_added_by_fkey(email)")
+      .select("*")
       .order("created_at", { ascending: false });
     setBooks((data as Book[]) ?? []);
     setLoading(false);
@@ -87,9 +90,25 @@ export default function BooksPage() {
   async function handleScan(code: string) {
     const isbn = normalizeIsbn(code);
     setScanOpen(false);
-    // Make sure the form is open so the scanned data is visible.
+
+    // Does this ISBN already exist in the catalogue? Ask before duplicating.
+    const existing = books.find(
+      (b) => b.isbn && normalizeIsbn(b.isbn) === isbn
+    );
+    if (existing) {
+      setDupBook(existing);
+      setDupQty(1);
+      return;
+    }
+
+    await runLookup(isbn, false);
+  }
+
+  // Fetch metadata for an ISBN and fill the (open) form.
+  async function runLookup(isbn: string, fresh: boolean) {
     setEditOpen(true);
-    setForm((f) => ({ ...f, isbn }));
+    if (fresh) setForm({ ...EMPTY, isbn });
+    else setForm((f) => ({ ...f, isbn }));
     setLookupMsg("Looking up book details…");
     const found = await lookupIsbn(isbn);
     if (found && (found.title || found.author || found.publisher)) {
@@ -244,6 +263,32 @@ export default function BooksPage() {
     else load();
   }
 
+  async function addCopiesToExisting() {
+    if (!dupBook) return;
+    const n = Math.max(1, Number(dupQty) || 1);
+    setDupBusy(true);
+    const { error } = await supabase
+      .from("books")
+      .update({
+        quantity: dupBook.quantity + n,
+        available_quantity: dupBook.available_quantity + n,
+      })
+      .eq("book_id", dupBook.book_id);
+    setDupBusy(false);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    setDupBook(null);
+    load();
+  }
+
+  function createFreshFromDup() {
+    const isbn = dupBook?.isbn ? normalizeIsbn(dupBook.isbn) : "";
+    setDupBook(null);
+    void runLookup(isbn, true);
+  }
+
   return (
     <div>
       <PageHeader
@@ -332,9 +377,6 @@ export default function BooksPage() {
                     <Td>
                       <div className="font-medium">{b.name}</div>
                       {b.isbn && <div className="text-xs text-muted">{b.isbn}</div>}
-                      {b.adder?.email && (
-                        <div className="text-xs text-muted">Added by {b.adder.email}</div>
-                      )}
                     </Td>
                     <Td>{b.author}</Td>
                     <Td>
@@ -384,7 +426,11 @@ export default function BooksPage() {
                   {(b.category || "Uncategorised")}
                   {b.sub_category ? ` · ${b.sub_category}` : ""}
                   {b.isbn ? ` · ${b.isbn}` : ""}
-                  {b.adder?.email ? ` · Added by ${b.adder.email}` : ""}
+                </div>
+                <div className="mt-1 text-xs text-muted">
+                  📍 {b.shelf_no || b.rack_no
+                    ? `Shelf ${b.shelf_no || "—"} · Rack ${b.rack_no || "—"}`
+                    : "No location set"}
                 </div>
                 <div className="mt-3 flex gap-2">
                   <button className="btn btn-ghost flex-1 py-1.5 text-xs" onClick={() => openEdit(b)}>
@@ -538,6 +584,56 @@ export default function BooksPage() {
         onClose={() => setSearchOpen(false)}
         onSelect={handlePickFromSearch}
       />
+
+      <Modal
+        open={!!dupBook}
+        onClose={() => setDupBook(null)}
+        title="This book is already in the catalogue"
+      >
+        {dupBook && (
+          <div className="flex flex-col gap-4">
+            <div className="card p-4">
+              <div className="font-medium">{dupBook.name}</div>
+              <div className="text-sm text-muted">{dupBook.author}</div>
+              <div className="mt-1 text-xs text-muted">
+                ISBN {dupBook.isbn} · {dupBook.available_quantity}/{dupBook.quantity} available
+                {dupBook.shelf_no ? ` · Shelf ${dupBook.shelf_no}` : ""}
+              </div>
+            </div>
+
+            <div>
+              <label className="label">Add copies to this book</label>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  className="input max-w-28"
+                  value={dupQty}
+                  onChange={(e) => setDupQty(Number(e.target.value))}
+                />
+                <button
+                  className="btn btn-primary flex-1"
+                  disabled={dupBusy}
+                  onClick={addCopiesToExisting}
+                >
+                  {dupBusy
+                    ? "Adding…"
+                    : `Add ${Math.max(1, Number(dupQty) || 1)} cop${(Number(dupQty) || 1) === 1 ? "y" : "ies"}`}
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t pt-3">
+              <button
+                className="btn btn-ghost w-full"
+                onClick={createFreshFromDup}
+              >
+                Create a separate new entry instead
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
