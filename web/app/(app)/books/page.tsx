@@ -597,7 +597,9 @@ export default function BooksPage() {
               <div className="text-sm text-muted">{dupBook.author}</div>
               <div className="mt-1 text-xs text-muted">
                 ISBN {dupBook.isbn} · {dupBook.available_quantity}/{dupBook.quantity} available
-                {dupBook.shelf_no ? ` · Shelf ${dupBook.shelf_no}` : ""}
+              </div>
+              <div className="mt-1 text-xs text-muted">
+                📍 Shelf {dupBook.shelf_no || "—"} · Rack {dupBook.rack_no || "—"}
               </div>
             </div>
 
