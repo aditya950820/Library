@@ -111,12 +111,12 @@ export const SHELF_BY_CATEGORY: Record<string, string> = {
   "History, Culture & Social Sciences": "B",
   "Competitive Exam & Test Preparation": "C",
   "Biography, Memoir & True Narrative": "D",
-  "Children's & Juvenile Literature": "E",
-  "Literary & Commercial Fiction": "F",
-  "Reference, Encyclopedias & Dictionaries": "G",
-  "Religion, Philosophy & Spirituality": "H",
-  "Science, Technology & Medicine": "I",
-  "Self-Help & Personal Development": "J",
+  "Reference, Encyclopedias & Dictionaries": "E",
+  "Self-Help & Personal Development": "F",
+  "Children's & Juvenile Literature": "G",
+  "Literary & Commercial Fiction": "H",
+  "Religion, Philosophy & Spirituality": "I",
+  "Science, Technology & Medicine": "J",
 };
 
 /** The shelf letter assigned to a category. */
@@ -124,6 +124,11 @@ export function shelfForCategory(category: string | null | undefined): string {
   if (!category) return "";
   return SHELF_BY_CATEGORY[category] ?? "";
 }
+
+// Categories ordered by their shelf letter (A → J) for dropdowns.
+export const CATEGORIES_BY_SHELF = [...CATEGORIES].sort((a, b) =>
+  shelfForCategory(a).localeCompare(shelfForCategory(b))
+);
 
 // Keywords that hint at a category, used for a quick local match before
 // falling back to the AI classifier.

@@ -9,7 +9,7 @@ import BookSearch from "@/components/BookSearch";
 import { lookupIsbn, normalizeIsbn, type BookMeta } from "@/lib/isbn";
 import {
   TAXONOMY,
-  CATEGORIES,
+  CATEGORIES_BY_SHELF,
   SHELVES,
   matchCategory,
   aiClassify,
@@ -341,7 +341,7 @@ export default function BooksPage() {
           onChange={(e) => setCategoryFilter(e.target.value)}
         >
           <option value="">All categories</option>
-          {CATEGORIES.map((c) => (
+          {CATEGORIES_BY_SHELF.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
@@ -502,7 +502,7 @@ export default function BooksPage() {
                 }
               >
                 <option value="">Select / auto-detect on save…</option>
-                {CATEGORIES.map((c) => (
+                {CATEGORIES_BY_SHELF.map((c) => (
                   <option key={c} value={c}>
                     {c} (Shelf {shelfForCategory(c)})
                   </option>
