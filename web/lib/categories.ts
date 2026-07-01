@@ -113,10 +113,10 @@ export const SHELF_BY_CATEGORY: Record<string, string> = {
   "Biography, Memoir & True Narrative": "D",
   "Reference, Encyclopedias & Dictionaries": "E",
   "Self-Help & Personal Development": "F",
-  "Children's & Juvenile Literature": "G",
-  "Literary & Commercial Fiction": "H",
+  "Science, Technology & Medicine": "G",
+  "Children's & Juvenile Literature": "H",
   "Religion, Philosophy & Spirituality": "I",
-  "Science, Technology & Medicine": "J",
+  "Literary & Commercial Fiction": "J",
 };
 
 /** The shelf letter assigned to a category. */
