@@ -7,9 +7,41 @@ export const maxDuration = 60;
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 
+const CATEGORY_DESCRIPTIONS: Record<string, string> = {
+  "Academic Textbook & Student Resource":
+    "Course textbooks, study guides and academic resources tied to a school class or college/degree syllabus (e.g. NCERT, university textbooks, lab manuals).",
+  "History, Culture & Social Sciences":
+    "History, politics & government, sociology, geography, economics, anthropology and cultural studies.",
+  "Competitive Exam & Test Preparation":
+    "Books to prepare for entrance/competitive exams — UPSC, SSC, banking, JEE, NEET, GATE, teaching (CTET/TET), defence, state PSC — objective questions, practice sets, previous-year papers, GK.",
+  "Biography, Memoir & True Narrative":
+    "Real-life stories of real people — biographies, autobiographies, memoirs and true narratives.",
+  "Reference, Encyclopedias & Dictionaries":
+    "Works consulted for facts — dictionaries, encyclopedias, atlases & maps, almanacs/yearbooks, grammar and language references.",
+  "Self-Help & Personal Development":
+    "Practical guidance to improve one's life — motivation, productivity, personal finance & investing, career/business, health & wellness, relationships, mindfulness.",
+  "Science, Technology & Medicine":
+    "General or professional science and technical subjects (not tied to a school syllabus) — physics, chemistry, biology, mathematics, computer science/IT, engineering, medicine & health, environment.",
+  "Children's & Juvenile Literature":
+    "Books written for children and young readers — picture books, early readers, middle grade, young adult, comics & graphic novels, activity books.",
+  "Religion, Philosophy & Spirituality":
+    "Religious scriptures and commentary, theology, philosophy and spirituality across traditions.",
+  "Literary & Commercial Fiction":
+    "Novels and imaginative fiction for adults — classics, contemporary fiction, mystery & thriller, romance, science fiction & fantasy, short stories, poetry & drama.",
+};
+
 function buildAllowedList() {
-  return CATEGORIES.map((c) => `- "${c}": [${TAXONOMY[c].join(", ")}]`).join("\n");
+  return CATEGORIES.map(
+    (c) =>
+      `- "${c}" — ${CATEGORY_DESCRIPTIONS[c] ?? ""}\n    sub-categories: [${TAXONOMY[c].join(", ")}]`
+  ).join("\n");
 }
+
+const RULES = `Tie-breakers:
+- A book meant for a school/college syllabus goes to "Academic Textbook & Student Resource", even if its subject is science or history.
+- A book aimed at cracking a competitive/entrance exam goes to "Competitive Exam & Test Preparation", even if its subject is science, maths or history.
+- Prefer the most specific category that matches the book's real purpose and readership.
+- You MUST return a sub_category taken from the chosen category's list. If none clearly fits, return exactly "Other" (never leave it blank, never invent a new value).`;
 
 export async function POST(request: Request) {
   const key = process.env.GROQ_API_KEY;
@@ -29,13 +61,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "title required" }, { status: 400 });
   }
 
-  const system = `You are an expert librarian. First, use web search to understand what this specific book is actually about — its real subject, genre and intended readers — instead of guessing from keywords in the title. Then classify it into exactly one category and one sub-category chosen ONLY from the allowed list below. If the sub-category is genuinely unclear, use "Other".
-
-When you are done, output ONLY a single JSON object as the final line and nothing after it: {"category": string, "sub_category": string}.
-
-Allowed:
-${buildAllowedList()}`;
-
   const user = [
     `Title: ${title}`,
     author ? `Author: ${author}` : "",
@@ -44,7 +69,31 @@ ${buildAllowedList()}`;
     .filter(Boolean)
     .join("\n");
 
-  try {
+  // Fast path: the model classifies from its own knowledge and may signal
+  // that it cannot conclude. Only then do we pay for a web search.
+  const systemFast = `You are an expert librarian shelving a book into a fixed taxonomy. Using what you already know about this specific book, its author and subject, choose EXACTLY one category and one sub-category from the allowed list below.
+
+${RULES}
+
+If — and only if — you genuinely do not recognise this book and cannot reasonably infer its subject from the title, author or hint, set "category" to "Unknown" (do not guess blindly).
+
+Output ONLY a single JSON object and nothing else: {"category": string, "sub_category": string}.
+
+Allowed categories (with descriptions and their sub-categories):
+${buildAllowedList()}`;
+
+  const systemSearch = `You are an expert librarian shelving a book into a fixed taxonomy. Use web search to find out what this specific book is actually about — its real subject, genre and intended readers — then choose EXACTLY one category and one sub-category from the allowed list below.
+
+${RULES}
+
+Do NOT return "Unknown" this time — always commit to the single best-fitting category and sub-category (use "Other" for the sub-category if none fits).
+
+When done, output ONLY a single JSON object as the final line: {"category": string, "sub_category": string}.
+
+Allowed categories (with descriptions and their sub-categories):
+${buildAllowedList()}`;
+
+  async function callGroq(useSearch: boolean) {
     const res = await fetch(GROQ_URL, {
       method: "POST",
       headers: {
@@ -54,36 +103,36 @@ ${buildAllowedList()}`;
       body: JSON.stringify({
         model: "openai/gpt-oss-120b",
         temperature: 0,
-        max_completion_tokens: 4096,
-        reasoning_effort: "medium",
-        // Built-in web search so the model understands the real book,
-        // not just keywords in the title.
-        tools: [{ type: "browser_search" }],
+        max_completion_tokens: useSearch ? 4096 : 1024,
+        reasoning_effort: useSearch ? "medium" : "low",
+        ...(useSearch ? { tools: [{ type: "browser_search" }] } : {}),
         messages: [
-          { role: "system", content: system },
+          { role: "system", content: useSearch ? systemSearch : systemFast },
           { role: "user", content: user },
         ],
       }),
       cache: "no-store",
     });
-
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      return NextResponse.json(
-        { error: `groq ${res.status}`, detail: t.slice(0, 200) },
-        { status: 200 }
-      );
-    }
-
+    if (!res.ok) return null;
     const data = await res.json();
     const content: string = data.choices?.[0]?.message?.content ?? "";
-    // The final JSON may be preceded by search notes; take the last object
-    // that actually contains a "category" key.
     const objs = content.match(/\{[^{}]*"category"[^{}]*\}/g);
     const parsed = objs?.length ? JSON.parse(objs[objs.length - 1]) : null;
-    const guess = normalizeGuess(parsed);
+    return normalizeGuess(parsed); // null when Unknown/invalid
+  }
 
-    return NextResponse.json({ guess });
+  try {
+    // 1) Normal LLM call (fast, no search).
+    let guess = await callGroq(false);
+    let searched = false;
+
+    // 2) Fall back to web search only if it couldn't conclude.
+    if (!guess) {
+      guess = await callGroq(true);
+      searched = true;
+    }
+
+    return NextResponse.json({ guess, searched });
   } catch (e) {
     return NextResponse.json(
       { guess: null, error: e instanceof Error ? e.message : "failed" },
