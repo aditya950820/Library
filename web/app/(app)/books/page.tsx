@@ -47,32 +47,42 @@ export default function BooksPage() {
   const [dupBook, setDupBook] = useState<Book | null>(null);
   const [dupQty, setDupQty] = useState(1);
   const [dupBusy, setDupBusy] = useState(false);
+  const [total, setTotal] = useState<number | null>(null);
 
+  const PAGE_SIZE = 200;
+
+  // Server-side search + filter (works no matter how large the catalogue is).
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase
+    let query = supabase
       .from("books")
-      .select("*")
-      .order("created_at", { ascending: false });
-    setBooks((data as Book[]) ?? []);
-    setLoading(false);
-  }, [supabase]);
+      .select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .limit(PAGE_SIZE);
 
+    const q = search.trim();
+    if (q) {
+      // Escape PostgREST reserved chars in the or() filter.
+      const safe = q.replace(/[,()]/g, " ");
+      query = query.or(
+        `name.ilike.%${safe}%,author.ilike.%${safe}%,isbn.ilike.%${safe}%`
+      );
+    }
+    if (categoryFilter) query = query.eq("category", categoryFilter);
+
+    const { data, count } = await query;
+    setBooks((data as Book[]) ?? []);
+    setTotal(count ?? null);
+    setLoading(false);
+  }, [supabase, search, categoryFilter]);
+
+  // Debounce search/filter changes so we don't hit the DB on every keystroke.
   useEffect(() => {
-    load();
+    const t = setTimeout(load, 250);
+    return () => clearTimeout(t);
   }, [load]);
 
-  const filtered = books.filter((b) => {
-    if (categoryFilter && b.category !== categoryFilter) return false;
-    const q = search.toLowerCase();
-    return (
-      !q ||
-      b.name.toLowerCase().includes(q) ||
-      b.author.toLowerCase().includes(q) ||
-      (b.isbn ?? "").toLowerCase().includes(q) ||
-      (b.category ?? "").toLowerCase().includes(q)
-    );
-  });
+  const filtered = books;
 
   function openNew() {
     setForm(EMPTY);
@@ -91,14 +101,20 @@ export default function BooksPage() {
     const isbn = normalizeIsbn(code);
     setScanOpen(false);
 
-    // Does this ISBN already exist in the catalogue? Ask before duplicating.
-    const existing = books.find(
-      (b) => b.isbn && normalizeIsbn(b.isbn) === isbn
-    );
-    if (existing) {
-      setDupBook(existing);
-      setDupQty(1);
-      return;
+    // Ask the database directly (works for the whole catalogue, not just the
+    // rows currently loaded on screen).
+    if (isbn) {
+      const { data: existing } = await supabase
+        .from("books")
+        .select("*")
+        .eq("isbn", isbn)
+        .limit(1)
+        .maybeSingle();
+      if (existing) {
+        setDupBook(existing as Book);
+        setDupQty(1);
+        return;
+      }
     }
 
     await runLookup(isbn, false);
@@ -216,7 +232,7 @@ export default function BooksPage() {
       name: form.name?.trim(),
       author: form.author?.trim(),
       publisher: emptyToNull(form.publisher),
-      isbn: emptyToNull(form.isbn),
+      isbn: form.isbn ? normalizeIsbn(form.isbn) || null : null,
       shelf_no: shelf,
       rack_no: emptyToNull(form.rack_no),
       category,
@@ -293,7 +309,7 @@ export default function BooksPage() {
     <div>
       <PageHeader
         title="Books"
-        subtitle={`${books.length} title${books.length === 1 ? "" : "s"} in catalogue`}
+        subtitle={`${total ?? "…"} title${total === 1 ? "" : "s"} in catalogue`}
         action={
           <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
             <button className="btn btn-ghost" onClick={() => setBulkOpen(true)}>
@@ -358,6 +374,11 @@ export default function BooksPage() {
         />
       ) : (
         <>
+          {total !== null && total > books.length && (
+            <p className="mb-3 text-xs text-muted">
+              Showing {books.length} of {total}. Refine your search to narrow results.
+            </p>
+          )}
           {/* Desktop table */}
           <div className="card hidden overflow-hidden md:block">
             <table className="w-full text-sm">
@@ -699,7 +720,7 @@ function BulkUpload({
           name: (r.name || r.title)?.trim(),
           author: r.author?.trim(),
           publisher: emptyToNull(r.publisher),
-          isbn: emptyToNull(r.isbn),
+          isbn: r.isbn ? normalizeIsbn(r.isbn) || null : null,
           shelf_no: emptyToNull(r.shelf_no) || shelfForCategory(category) || null,
           rack_no: emptyToNull(r.rack_no),
           category,

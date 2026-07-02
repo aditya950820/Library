@@ -9,8 +9,6 @@ import { normalizeIsbn } from "@/lib/isbn";
 import {
   MAX_BOOKS_PER_STUDENT,
   WARN_BOOKS_THRESHOLD,
-  type Book,
-  type Student,
   type BookIssueWithRefs,
 } from "@/lib/types";
 
@@ -19,8 +17,6 @@ type Filter = "active" | "overdue" | "returned" | "all";
 export default function IssuesPage() {
   const supabase = createClient();
   const [issues, setIssues] = useState<BookIssueWithRefs[]>([]);
-  const [books, setBooks] = useState<Book[]>([]);
-  const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("active");
   const [search, setSearch] = useState("");
@@ -28,19 +24,14 @@ export default function IssuesPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [iss, bk, st] = await Promise.all([
-      supabase
-        .from("book_issues")
-        .select(
-          "*, books(name, author), students(student_name, id_number), issuer:profiles!book_issues_issued_by_fkey(email)"
-        )
-        .order("issued_at", { ascending: false }),
-      supabase.from("books").select("*").order("name"),
-      supabase.from("students").select("*").order("student_name"),
-    ]);
-    setIssues((iss.data as BookIssueWithRefs[]) ?? []);
-    setBooks((bk.data as Book[]) ?? []);
-    setStudents((st.data as Student[]) ?? []);
+    const { data } = await supabase
+      .from("book_issues")
+      .select(
+        "*, books(name, author), students(student_name, id_number), issuer:profiles!book_issues_issued_by_fkey(email)"
+      )
+      .order("issued_at", { ascending: false })
+      .limit(500);
+    setIssues((data as BookIssueWithRefs[]) ?? []);
     setLoading(false);
   }, [supabase]);
 
@@ -89,16 +80,6 @@ export default function IssuesPage() {
     returned: issues.filter((i) => i.status === "returned").length,
     all: issues.length,
   };
-
-  // Active (not-yet-returned) books currently held by each student.
-  const activeByStudent = useMemo(() => {
-    const m: Record<string, number> = {};
-    issues.forEach((i) => {
-      if (i.status === "issued")
-        m[i.student_id] = (m[i.student_id] ?? 0) + 1;
-    });
-    return m;
-  }, [issues]);
 
   return (
     <div>
@@ -174,9 +155,6 @@ export default function IssuesPage() {
       <IssueModal
         open={issueOpen}
         onClose={() => setIssueOpen(false)}
-        books={books}
-        students={students}
-        activeByStudent={activeByStudent}
         onDone={load}
       />
     </div>
@@ -186,69 +164,119 @@ export default function IssuesPage() {
 function IssueModal({
   open,
   onClose,
-  books,
-  students,
-  activeByStudent,
   onDone,
 }: {
   open: boolean;
   onClose: () => void;
-  books: Book[];
-  students: Student[];
-  activeByStudent: Record<string, number>;
   onDone: () => void;
 }) {
   const supabase = createClient();
-  const [bookId, setBookId] = useState("");
-  const [studentId, setStudentId] = useState("");
+  const [book, setBook] = useState<ComboItem | null>(null);
+  const [student, setStudent] = useState<ComboItem | null>(null);
   const [days, setDays] = useState(14);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
+  const [activeCount, setActiveCount] = useState(0);
 
-  const availableBooks = books.filter((b) => b.available_quantity > 0);
-  const activeCount = studentId ? (activeByStudent[studentId] ?? 0) : 0;
+  const bookId = book?.value ?? "";
+  const studentId = student?.value ?? "";
   const atMax = activeCount >= MAX_BOOKS_PER_STUDENT;
 
-  const bookItems: ComboItem[] = useMemo(
-    () =>
-      books.map((b) => ({
+  // Fetch the student's live active-book count whenever they change.
+  useEffect(() => {
+    if (!studentId) {
+      setActiveCount(0);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { count } = await supabase
+        .from("book_issues")
+        .select("*", { count: "exact", head: true })
+        .eq("student_id", studentId)
+        .eq("status", "issued");
+      if (!cancelled) setActiveCount(count ?? 0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId, supabase]);
+
+  // Server-side search: books (available first, out-of-stock disabled).
+  const searchBooksFn = useCallback(
+    async (q: string): Promise<ComboItem[]> => {
+      let query = supabase
+        .from("books")
+        .select("book_id, name, author, isbn, available_quantity")
+        .order("name")
+        .limit(25);
+      const term = q.trim();
+      if (term) {
+        const safe = term.replace(/[,()]/g, " ");
+        query = query.or(
+          `name.ilike.%${safe}%,author.ilike.%${safe}%,isbn.ilike.%${safe}%`
+        );
+      } else {
+        query = query.gt("available_quantity", 0);
+      }
+      const { data } = await query;
+      return (data ?? []).map((b) => ({
         value: b.book_id,
         label: b.name,
         sublabel: `${b.author}${b.isbn ? ` · ${b.isbn}` : ""} · ${b.available_quantity} avail.`,
-        keywords: `${b.author} ${b.isbn ?? ""}`,
         disabled: b.available_quantity <= 0,
-      })),
-    [books]
+      }));
+    },
+    [supabase]
   );
 
-  const studentItems: ComboItem[] = useMemo(
-    () =>
-      students.map((s) => ({
+  // Server-side search: students by name / ID / mobile.
+  const searchStudentsFn = useCallback(
+    async (q: string): Promise<ComboItem[]> => {
+      let query = supabase
+        .from("students")
+        .select("student_id, student_name, id_number, mobile")
+        .order("student_name")
+        .limit(25);
+      const term = q.trim();
+      if (term) {
+        const safe = term.replace(/[,()]/g, " ");
+        query = query.or(
+          `student_name.ilike.%${safe}%,id_number.ilike.%${safe}%,mobile.ilike.%${safe}%`
+        );
+      }
+      const { data } = await query;
+      return (data ?? []).map((s) => ({
         value: s.student_id,
         label: s.student_name,
         sublabel: `${s.id_number}${s.mobile ? ` · ${s.mobile}` : ""}`,
-        keywords: `${s.id_number} ${s.mobile ?? ""}`,
-      })),
-    [students]
+      }));
+    },
+    [supabase]
   );
 
-  function handleScan(code: string) {
+  async function handleScan(code: string) {
     setScanOpen(false);
     const isbn = normalizeIsbn(code);
-    const match = books.find((b) => b.isbn && normalizeIsbn(b.isbn) === isbn);
+    const { data: match } = await supabase
+      .from("books")
+      .select("book_id, name, author, isbn, available_quantity")
+      .eq("isbn", isbn)
+      .limit(1)
+      .maybeSingle();
     if (!match) {
-      setBookId("");
+      setBook(null);
       setScanMsg(`No book in the catalogue with ISBN ${isbn}. Add it first.`);
       return;
     }
     if (match.available_quantity <= 0) {
-      setBookId("");
+      setBook(null);
       setScanMsg(`"${match.name}" has no copies available right now.`);
       return;
     }
-    setBookId(match.book_id);
+    setBook({ value: match.book_id, label: match.name });
     setScanMsg(`Selected "${match.name}" by ${match.author}.`);
   }
 
@@ -256,14 +284,12 @@ function IssueModal({
     e.preventDefault();
     setError(null);
 
-    // Hard limit — also enforced in the database.
     if (activeCount >= MAX_BOOKS_PER_STUDENT) {
       setError(
         `This student already has ${activeCount} books out — ${MAX_BOOKS_PER_STUDENT} is the maximum. Return one before issuing another.`
       );
       return;
     }
-    // Soft warning — require explicit approval past the threshold.
     if (activeCount >= WARN_BOOKS_THRESHOLD) {
       const ok = window.confirm(
         `This student already has ${activeCount} book${activeCount === 1 ? "" : "s"} issued. Do you still want to issue another?`
@@ -283,8 +309,8 @@ function IssueModal({
       return;
     }
     setSaving(false);
-    setBookId("");
-    setStudentId("");
+    setBook(null);
+    setStudent(null);
     setDays(14);
     setScanMsg(null);
     onClose();
@@ -312,28 +338,25 @@ function IssueModal({
 
         <Field label="Book *">
           <Combobox
-            items={bookItems}
+            onSearch={searchBooksFn}
             value={bookId}
-            onChange={(v) => {
-              setBookId(v);
+            valueLabel={book?.label}
+            onChange={(item) => {
+              setBook(item);
               setScanMsg(null);
             }}
             placeholder="Search book by title, author or ISBN…"
             emptyText="No matching books"
           />
-          {availableBooks.length === 0 && (
-            <p className="mt-1 text-xs" style={{ color: "var(--danger)" }}>
-              No books with available copies.
-            </p>
-          )}
         </Field>
 
         <Field label="Student *">
           <Combobox
-            items={studentItems}
+            onSearch={searchStudentsFn}
             value={studentId}
-            onChange={setStudentId}
-            placeholder="Search student by name or ID…"
+            valueLabel={student?.label}
+            onChange={setStudent}
+            placeholder="Search student by name, ID or mobile…"
             emptyText="No matching students"
           />
           {studentId && (

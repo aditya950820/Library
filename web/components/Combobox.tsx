@@ -12,38 +12,67 @@ export type ComboItem = {
 
 export default function Combobox({
   items,
+  onSearch,
   value,
+  valueLabel,
   onChange,
   placeholder = "Type to search…",
   emptyText = "No matches",
 }: {
-  items: ComboItem[];
+  /** Static list — filtered in the browser. Ignored when onSearch is given. */
+  items?: ComboItem[];
+  /** Async server-side search. Receives the query, returns matching items. */
+  onSearch?: (query: string) => Promise<ComboItem[]>;
   value: string;
-  onChange: (value: string) => void;
+  /** Label to show for the current value (needed in async mode). */
+  valueLabel?: string;
+  onChange: (item: ComboItem | null) => void;
   placeholder?: string;
   emptyText?: string;
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [remote, setRemote] = useState<ComboItem[]>([]);
+  const [loading, setLoading] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const reqRef = useRef(0);
 
-  const selected = items.find((i) => i.value === value) || null;
+  const isAsync = !!onSearch;
 
-  // When closed, show the selected label in the input.
-  const display = open ? query : selected?.label ?? "";
-
-  const filtered = useMemo(() => {
+  // Local filtering for static mode.
+  const localFiltered = useMemo(() => {
+    if (isAsync) return [];
     const q = query.trim().toLowerCase();
-    if (!q) return items.slice(0, 50);
-    return items
+    const list = items ?? [];
+    if (!q) return list.slice(0, 50);
+    return list
       .filter((i) =>
         `${i.label} ${i.sublabel ?? ""} ${i.keywords ?? ""}`
           .toLowerCase()
           .includes(q)
       )
       .slice(0, 50);
-  }, [items, query]);
+  }, [items, query, isAsync]);
+
+  const results = isAsync ? remote : localFiltered;
+
+  // Debounced server search in async mode.
+  useEffect(() => {
+    if (!isAsync || !open) return;
+    const q = query.trim();
+    const id = ++reqRef.current;
+    setLoading(true);
+    const t = setTimeout(async () => {
+      const r = await onSearch!(q);
+      if (id === reqRef.current) {
+        setRemote(r);
+        setLoading(false);
+        setActive(0);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query, open, isAsync, onSearch]);
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -56,9 +85,14 @@ export default function Combobox({
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
+  const staticSelectedLabel = !isAsync
+    ? (items ?? []).find((i) => i.value === value)?.label
+    : undefined;
+  const display = open ? query : valueLabel ?? staticSelectedLabel ?? "";
+
   function pick(item: ComboItem) {
     if (item.disabled) return;
-    onChange(item.value);
+    onChange(item);
     setOpen(false);
     setQuery("");
   }
@@ -82,13 +116,13 @@ export default function Combobox({
         onKeyDown={(e) => {
           if (e.key === "ArrowDown") {
             e.preventDefault();
-            setActive((a) => Math.min(a + 1, filtered.length - 1));
+            setActive((a) => Math.min(a + 1, results.length - 1));
           } else if (e.key === "ArrowUp") {
             e.preventDefault();
             setActive((a) => Math.max(a - 1, 0));
           } else if (e.key === "Enter") {
             e.preventDefault();
-            if (filtered[active]) pick(filtered[active]);
+            if (results[active]) pick(results[active]);
           } else if (e.key === "Escape") {
             setOpen(false);
           }
@@ -99,7 +133,7 @@ export default function Combobox({
           type="button"
           aria-label="Clear"
           onClick={() => {
-            onChange("");
+            onChange(null);
             setQuery("");
           }}
           className="absolute right-2 top-1/2 -translate-y-1/2 text-muted"
@@ -110,10 +144,14 @@ export default function Combobox({
 
       {open && (
         <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-lg border bg-surface shadow-lg">
-          {filtered.length === 0 ? (
-            <div className="px-3 py-2 text-sm text-muted">{emptyText}</div>
+          {loading ? (
+            <div className="px-3 py-2 text-sm text-muted">Searching…</div>
+          ) : results.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-muted">
+              {isAsync && !query.trim() ? "Type to search…" : emptyText}
+            </div>
           ) : (
-            filtered.map((item, idx) => (
+            results.map((item, idx) => (
               <button
                 type="button"
                 key={item.value}
